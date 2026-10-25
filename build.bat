@@ -14,7 +14,7 @@ if not exist "%ROOT%vendor\modules\AMDFamily17.bin" (
 
 "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 ^
   /win32manifest:"%ROOT%app.manifest" /win32icon:"%ROOT%assets\app.ico" /out:"%ROOT%TaskbarStatus.exe" ^
-  /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll ^
+  /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:System.Web.Extensions.dll ^
   /resource:"%ROOT%vendor\modules\AMDFamily17.bin",AMDFamily17.bin ^
   /resource:"%ROOT%vendor\modules\IntelMSR.bin",IntelMSR.bin ^
   "%ROOT%src\*.cs"

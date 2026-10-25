@@ -69,6 +69,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\TaskbarStatus.exe"; Parameters: "--register-task on"; Flags: runhidden waituntilterminated; Tasks: autostart
 Filename: "{app}\TaskbarStatus.exe"; Parameters: "--register-task off"; Flags: runhidden waituntilterminated; Tasks: not autostart
 Filename: "{app}\TaskbarStatus.exe"; Description: "{cm:Launch}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Background updates run the setup with /VERYSILENT /RESTARTAPP=1: start the app again afterwards.
+Filename: "{app}\TaskbarStatus.exe"; Flags: nowait runasoriginaluser; Check: RestartAfterSilentUpdate
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM TaskbarStatus.exe /F"; Flags: runhidden waituntilterminated; RunOnceId: "StopApp"
@@ -78,6 +80,11 @@ Filename: "{app}\TaskbarStatus.exe"; Parameters: "--unregister-task"; Flags: run
 function PawnIOInstalled: Boolean;
 begin
   Result := RegKeyExists(HKLM64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO');
+end;
+
+function RestartAfterSilentUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RESTARTAPP|0}') = '1');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

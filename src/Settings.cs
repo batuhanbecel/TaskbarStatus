@@ -24,6 +24,7 @@ namespace TaskbarStatus
         public bool RamAsGb = false;
         public bool ShowInFullscreen = false;
         public bool CheckUpdates = true;
+        public bool AutoInstallUpdates = true;
 
         public int Anchor = 0;         // 0 = next to the tray (right), 1 = left edge of the taskbar
         public int Language = 0;       // 0 = Windows language, 1 = Turkish, 2 = English

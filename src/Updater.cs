@@ -1,21 +1,27 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Reflection;
-using System.Text.RegularExpressions;
+using System.Security.Cryptography;
+using System.Web.Script.Serialization;
 
 namespace TaskbarStatus
 {
-    // Checks GitHub Releases for a newer version and installs it on request.
+    // Checks GitHub Releases for a newer version and installs it silently in the background.
     class Updater
     {
         public const string Repo = "batuhanbecel/TaskbarStatus";
+
+        // Handled by the installer: run without UI and start TaskbarStatus again when done.
+        const string SilentArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RESTARTAPP=1";
 
         public static readonly Version Current = Normalize(Assembly.GetExecutingAssembly().GetName().Version);
 
         public Version Latest { get; private set; }
         public string InstallerUrl { get; private set; }
+        public string InstallerSha256 { get; private set; }   // from GitHub's asset digest, when present
         public string PageUrl { get; private set; }
 
         public bool UpdateAvailable { get { return Latest != null && Latest > Current; } }
@@ -33,14 +39,24 @@ namespace TaskbarStatus
                 using (WebClient web = NewClient())
                     json = web.DownloadString("https://api.github.com/repos/" + Repo + "/releases/latest");
 
-                Match tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9.]+)");
-                if (!tag.Success) return false;
-                Match page = Regex.Match(json, "\"html_url\"\\s*:\\s*\"(https://github.com/[^\"]+/releases/tag/[^\"]+)\"");
-                Match setup = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+Setup[^\"]*\\.exe)\"");
+                var release = (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(json);
+                string tag = ((string)release["tag_name"]).TrimStart('v');
+                PageUrl = release.ContainsKey("html_url") ? (string)release["html_url"] : "https://github.com/" + Repo + "/releases/latest";
+                InstallerUrl = InstallerSha256 = null;
 
-                PageUrl = page.Success ? page.Groups[1].Value : "https://github.com/" + Repo + "/releases/latest";
-                InstallerUrl = setup.Success ? setup.Groups[1].Value : null;
-                Latest = Normalize(new Version(tag.Groups[1].Value));
+                object[] assets = release.ContainsKey("assets") ? release["assets"] as object[] : null;
+                foreach (object o in assets ?? new object[0])
+                {
+                    var asset = (Dictionary<string, object>)o;
+                    string name = (string)asset["name"];
+                    if (!name.StartsWith("TaskbarStatus-Setup-", StringComparison.OrdinalIgnoreCase) ||
+                        !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+                    InstallerUrl = (string)asset["browser_download_url"];
+                    object digest;
+                    if (asset.TryGetValue("digest", out digest) && digest is string && ((string)digest).StartsWith("sha256:"))
+                        InstallerSha256 = ((string)digest).Substring(7);
+                }
+                Latest = Normalize(new Version(tag));
                 return true;
             }
             catch (Exception)
@@ -49,19 +65,33 @@ namespace TaskbarStatus
             }
         }
 
-        // Downloads the installer and starts it; the installer closes the running app itself.
-        // Falls back to the release page when no installer is attached. Blocking.
-        public void Install()
+        // Downloads the installer to %TEMP% and verifies its SHA-256. Blocking; returns the file path.
+        public string Download()
         {
-            if (InstallerUrl == null)
-            {
-                Process.Start(PageUrl);
-                return;
-            }
+            if (InstallerUrl == null) throw new InvalidOperationException("No installer attached to the release.");
             string file = Path.Combine(Path.GetTempPath(), "TaskbarStatus-Setup-" + Latest.ToString(3) + ".exe");
             using (WebClient web = NewClient())
                 web.DownloadFile(InstallerUrl, file);
-            Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
+
+            if (InstallerSha256 != null)
+            {
+                string actual;
+                using (var sha = SHA256.Create())
+                using (FileStream f = File.OpenRead(file))
+                    actual = BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "");
+                if (!actual.Equals(InstallerSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(file);
+                    throw new InvalidDataException("Downloaded installer does not match the release checksum.");
+                }
+            }
+            return file;
+        }
+
+        // Runs the installer without any UI; it closes this app, updates it and starts it again.
+        public static void InstallSilently(string installer)
+        {
+            Process.Start(new ProcessStartInfo(installer, SilentArgs) { UseShellExecute = true });
         }
 
         static WebClient NewClient()

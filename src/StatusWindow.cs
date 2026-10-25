@@ -29,6 +29,7 @@ namespace TaskbarStatus
         readonly List<Action> refreshChecks = new List<Action>();
         readonly Updater updater = new Updater();
         DateTime nextUpdateCheck = DateTime.UtcNow.AddSeconds(15);
+        volatile string pendingInstaller;   // downloaded, verified installer waiting to run
         int updateBusy;
         bool startupEnabled;
 
@@ -151,6 +152,7 @@ namespace TaskbarStatus
             Render(tray);
             if (ClientRectangle.Contains(PointToClient(Cursor.Position))) tip.SetToolTip(this, Details());
             if (settings.CheckUpdates && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
+            RunPendingInstaller();
         }
 
         // --- what to show ---
@@ -529,6 +531,7 @@ namespace TaskbarStatus
             var about = new ToolStripMenuItem(L.T("Updates", "Güncellemeler"));
             about.DropDownItems.Add(new ToolStripMenuItem("TaskbarStatus " + Updater.CurrentText) { Enabled = false });
             about.DropDownItems.Add(Toggle(L.T("Check automatically", "Otomatik denetle"), () => settings.CheckUpdates, v => settings.CheckUpdates = v));
+            about.DropDownItems.Add(Toggle(L.T("Install automatically in the background", "Arka planda otomatik yükle"), () => settings.AutoInstallUpdates, v => settings.AutoInstallUpdates = v));
             about.DropDownItems.Add(new ToolStripMenuItem(L.T("Check now", "Şimdi denetle"), null, (s, e) => ScheduleUpdateCheck(true)));
             about.DropDownItems.Add(new ToolStripMenuItem(L.T("Open GitHub page", "GitHub sayfasını aç"), null,
                 (s, e) => Process.Start("https://github.com/" + Updater.Repo)));
@@ -697,33 +700,61 @@ namespace TaskbarStatus
 
         // --- updates ---
 
+// Checks GitHub off the UI thread. A found update is downloaded right away when automatic
+        // installs are on (or the user asked); Tick then runs the installer silently.
         void ScheduleUpdateCheck(bool manual)
         {
             if (Interlocked.CompareExchange(ref updateBusy, 1, 0) != 0) return;
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 bool ok = updater.Check();
+                nextUpdateCheck = DateTime.UtcNow.AddHours(ok ? 6 : 1);
+                string error = ok ? null : L.T("Could not reach GitHub.", "GitHub'a ulaşılamadı.");
+                if (ok && updater.UpdateAvailable && (manual || settings.AutoInstallUpdates))
+                    error = DownloadUpdate();
                 updateBusy = 0;
-                nextUpdateCheck = DateTime.UtcNow.AddHours(ok ? 12 : 1);
-                if (!manual) return;
+                if (!manual || (error == null && updater.UpdateAvailable)) return;   // installing now
                 BeginInvoke((Action)(() => MessageBox.Show(
-                    !ok ? L.T("Could not reach GitHub.", "GitHub'a ulaşılamadı.")
-                    : updater.UpdateAvailable ? L.T("A new version is available: ", "Yeni sürüm var: ") + updater.LatestText
-                    : L.T("You are up to date (", "Güncelsin (") + Updater.CurrentText + ").",
-                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                    error ?? L.T("You are up to date (", "Güncelsin (") + Updater.CurrentText + ").",
+                    AppName, MessageBoxButtons.OK, error != null ? MessageBoxIcon.Warning : MessageBoxIcon.Information)));
             });
         }
 
+        // Menu: "Install update" (when automatic installs are off).
         void InstallUpdate()
         {
+            if (Interlocked.CompareExchange(ref updateBusy, 1, 0) != 0) return;
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                try { updater.Install(); }
-                catch (Exception)
-                {
-                    try { Process.Start(updater.PageUrl); } catch (Exception) { }
-                }
+                string error = DownloadUpdate();
+                updateBusy = 0;
+                if (error != null)
+                    BeginInvoke((Action)(() => MessageBox.Show(error, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning)));
             });
+        }
+
+        // Worker thread. Returns an error message, or null once the installer is ready to run.
+        string DownloadUpdate()
+        {
+            try
+            {
+                pendingInstaller = updater.Download();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return L.T("The update could not be downloaded: ", "Güncelleme indirilemedi: ") + ex.Message;
+            }
+        }
+
+        // UI thread, from Tick: start a downloaded installer unless a fullscreen app (a game) is in front.
+        void RunPendingInstaller()
+        {
+            string installer = pendingInstaller;
+            if (installer == null || hidden) return;
+            pendingInstaller = null;
+            try { Updater.InstallSilently(installer); }
+            catch (System.ComponentModel.Win32Exception) { }   // UAC declined (non-elevated copy)
         }
 
         // --- Win32 ---
