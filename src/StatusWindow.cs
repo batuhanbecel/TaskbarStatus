@@ -560,6 +560,7 @@ namespace TaskbarStatus
             menu.Items.Add(about);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem(L.T("Exit", "Çıkış"), null, (s, e) => Close()));
+            Win11Menu.Apply(menu);
         }
 
         // Rebuilds the menu in the newly chosen language once the current click has finished.
