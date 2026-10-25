@@ -30,6 +30,12 @@ namespace TaskbarStatus
         readonly Updater updater = new Updater();
         DateTime nextUpdateCheck = DateTime.UtcNow.AddSeconds(15);
         volatile string pendingInstaller;   // downloaded, verified installer waiting to run
+
+        // Embedding into the taskbar (see SetEmbedded).
+        IntPtr embeddedIn;
+        bool embedFailed, closing;
+        Form menuOwner;
+        public static bool RestartRequested;
         int updateBusy;
         bool startupEnabled;
 
@@ -90,6 +96,20 @@ namespace TaskbarStatus
             ApplySettings();
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            closing = true;
+            base.OnFormClosing(e);
+        }
+
+        // As a child of the taskbar, the widget is destroyed with it when Explorer restarts.
+        // Program then starts a fresh instance, which waits for the new taskbar.
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (!closing && !RecreatingHandle) RestartRequested = true;
+            base.OnHandleDestroyed(e);
+        }
+
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             timer.Stop();
@@ -141,7 +161,8 @@ namespace TaskbarStatus
             }
 
             IntPtr tray = FindWindow("Shell_TrayWnd", null);
-            bool shouldHide = tray == IntPtr.Zero || (!settings.ShowInFullscreen && IsFullscreen(fg, tray));
+            bool fullscreen = tray != IntPtr.Zero && IsFullscreen(fg, tray);
+            bool shouldHide = tray == IntPtr.Zero || (!settings.ShowInFullscreen && fullscreen);
             if (shouldHide)
             {
                 if (!hidden) { ShowWindow(Handle, SW_HIDE); hidden = true; }
@@ -149,9 +170,11 @@ namespace TaskbarStatus
             }
             if (hidden) { ShowWindow(Handle, SW_SHOWNOACTIVATE); hidden = false; }
 
+            // The taskbar hides itself behind fullscreen apps, and its children with it.
+            SetEmbedded(tray, !fullscreen);
             Render(tray);
-            if (ClientRectangle.Contains(PointToClient(Cursor.Position))) tip.SetToolTip(this, Details());
-            if (settings.CheckUpdates && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
+            if (!menu.Visible && ClientRectangle.Contains(PointToClient(Cursor.Position))) tip.SetToolTip(this, Details());
+            if (settings.CheckUpdates && !Program.Dev && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
             RunPendingInstaller();
         }
 
@@ -355,8 +378,46 @@ namespace TaskbarStatus
             int width = x + pad;
 
             int left = settings.Anchor == 1 ? tb.Left + settings.Offset : rightEdge - settings.Offset - width;
-            Present(ops, width, height, left, tb.Top);
-            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Present(ops, width, height);
+
+            if (embeddedIn != IntPtr.Zero)
+            {
+                // Child of the taskbar: position in its client coordinates, above its XAML content.
+                var origin = new POINT();
+                ClientToScreen(tray, ref origin);
+                SetWindowPos(Handle, HWND_TOP, left - origin.x, tb.Top - origin.y, width, height, SWP_NOACTIVATE);
+            }
+            else
+                SetWindowPos(Handle, HWND_TOPMOST, left, tb.Top, width, height, SWP_NOACTIVATE);
+        }
+
+        // Puts the widget inside the taskbar window (so the Start menu's blur and other shell
+        // flyouts treat it as part of the taskbar), or back to a topmost overlay when the taskbar
+        // is hidden behind a fullscreen app that we were asked to stay visible over.
+        void SetEmbedded(IntPtr tray, bool embed)
+        {
+            if (embed && (embedFailed || embeddedIn == tray)) return;
+            if (!embed && embeddedIn == IntPtr.Zero) return;
+
+            int style = GetWindowLong(Handle, GWL_STYLE);
+            if (embed)
+            {
+                SetWindowLong(Handle, GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD);
+                SetLastError(0);
+                if (SetParent(Handle, tray) == IntPtr.Zero && Marshal.GetLastWin32Error() != 0)
+                {
+                    SetWindowLong(Handle, GWL_STYLE, style);   // not allowed here: stay an overlay
+                    embedFailed = true;
+                    return;
+                }
+                embeddedIn = tray;
+            }
+            else
+            {
+                embeddedIn = IntPtr.Zero;
+                SetParent(Handle, IntPtr.Zero);
+                SetWindowLong(Handle, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
+            }
         }
 
         void EnsureFont(uint dpi)
@@ -392,7 +453,7 @@ namespace TaskbarStatus
 
         // Draws white text with GDI onto black, turns the coverage into per-pixel alpha and
         // tints it, then hands the premultiplied bitmap to UpdateLayeredWindow.
-        void Present(List<DrawOp> ops, int width, int height, int x, int y)
+        void Present(List<DrawOp> ops, int width, int height)
         {
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
@@ -439,11 +500,11 @@ namespace TaskbarStatus
                 }
                 Marshal.Copy(px, 0, bits, n);
 
+                // Content and size only; Render positions the window (screen or taskbar coordinates).
                 var size = new SIZE { cx = width, cy = height };
                 var src = new POINT();
-                var dst = new POINT { x = x, y = y };
                 var blend = new BLENDFUNCTION { BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
-                UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, ULW_ALPHA);
+                UpdateLayeredWindow(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, ULW_ALPHA);
             }
             finally
             {
@@ -656,7 +717,21 @@ namespace TaskbarStatus
             }
             else if (e.Button == MouseButtons.Right)
             {
-                SetForegroundWindow(Handle);   // so the menu closes when clicking elsewhere
+                // The menu needs a foreground top-level window of ours to close when clicking elsewhere;
+                // the widget itself may be a child of the taskbar.
+                if (menuOwner == null)
+                {
+                    menuOwner = new Form
+                    {
+                        FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                        ShowInTaskbar = false,
+                        StartPosition = FormStartPosition.Manual,
+                        Location = new System.Drawing.Point(-32000, -32000),
+                        Size = new System.Drawing.Size(1, 1)
+                    };
+                    menuOwner.Show();
+                }
+                SetForegroundWindow(menuOwner.Handle);
                 menu.Show(Cursor.Position);
             }
         }
@@ -762,7 +837,9 @@ namespace TaskbarStatus
         const int WS_EX_LAYERED = 0x80000, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
         const int ULW_ALPHA = 2, SW_HIDE = 0, SW_SHOWNOACTIVATE = 4, TRANSPARENT = 1;
         const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10, CLEARTYPE_NATURAL_QUALITY = 6;
-        static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        static readonly IntPtr HWND_TOPMOST = new IntPtr(-1), HWND_TOP = IntPtr.Zero;
+        const int GWL_STYLE = -16, WS_CHILD = 0x40000000;
+        const int WS_POPUP = unchecked((int)0x80000000);
 
         [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
@@ -797,8 +874,13 @@ namespace TaskbarStatus
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
         [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hWnd, IntPtr hdcDst, ref POINT dst, ref SIZE size,
+        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hWnd, IntPtr hdcDst, IntPtr dst, ref SIZE size,
             IntPtr hdcSrc, ref POINT src, int key, ref BLENDFUNCTION blend, int flags);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+        [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
+        [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hWnd, int index, int value);
+        [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hWnd, ref POINT p);
+        [DllImport("kernel32.dll")] static extern void SetLastError(int error);
         [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hWnd);
         [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hWnd, IntPtr hdc);
         [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr hdc);

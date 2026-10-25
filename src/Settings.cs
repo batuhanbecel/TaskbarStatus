@@ -7,7 +7,7 @@ namespace TaskbarStatus
     // User preferences, persisted as DWORDs under HKCU\Software\TaskbarStatus (one value per public field).
     class Settings
     {
-        const string Key = @"Software\TaskbarStatus";
+        public static string Key = @"Software\TaskbarStatus";
 
         public bool ShowCpu = true;
         public bool ShowCpuTemp = true;
