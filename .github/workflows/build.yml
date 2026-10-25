@@ -28,6 +28,10 @@ jobs:
         shell: pwsh
         run: ./tools/sign.ps1 -Files TaskbarStatus.exe
 
+      - name: Test fullscreen overlay layout
+        shell: cmd
+        run: tests\run.bat
+
       - name: Build installer
         shell: cmd
         run: build-installer.bat --skip-exe
