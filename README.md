@@ -74,6 +74,10 @@ Being a child of the taskbar keeps it above the taskbar's background and out of 
 If *Show over fullscreen apps* is on, it detaches into a topmost overlay while a fullscreen app is in front (the taskbar
 hides itself then). When Explorer restarts, the widget goes away with the old taskbar and the app starts itself again.
 
+The fullscreen overlay is kept inside the monitor even when the hidden taskbar moves off-screen or a game changes
+the resolution. Automatic update installation waits until fullscreen mode ends, including when the overlay is enabled.
+Use borderless fullscreen for games: an ordinary desktop overlay is not guaranteed to appear over exclusive fullscreen.
+
 ## Building
 
 No .NET SDK needed; the C# compiler that ships with Windows is used.
@@ -81,6 +85,7 @@ No .NET SDK needed; the C# compiler that ships with Windows is used.
 ```bat
 build.bat            :: TaskbarStatus.exe (downloads the PawnIO modules on first run)
 build-installer.bat  :: dist\TaskbarStatus-Setup-x.y.z.exe (needs Inno Setup 6)
+tests\run.bat        :: fullscreen overlay positioning regression tests
 ```
 
 `TaskbarStatus.exe --dev` runs a second copy next to the installed one, with its own settings

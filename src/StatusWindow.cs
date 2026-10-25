@@ -172,10 +172,10 @@ namespace TaskbarStatus
 
             // The taskbar hides itself behind fullscreen apps, and its children with it.
             SetEmbedded(tray, !fullscreen);
-            Render(tray);
+            Render(tray, fullscreen);
             if (!menu.Visible && ClientRectangle.Contains(PointToClient(Cursor.Position))) tip.SetToolTip(this, Details());
             if (settings.CheckUpdates && !Program.Dev && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
-            RunPendingInstaller();
+            if (!fullscreen) RunPendingInstaller();
         }
 
         // --- what to show ---
@@ -305,10 +305,10 @@ namespace TaskbarStatus
             public uint Color;   // ARGB; alpha dims labels
         }
 
-        void Render(IntPtr tray)
+        void Render(IntPtr tray, bool fullscreen)
         {
             RECT tb;
-            GetWindowRect(tray, out tb);
+            if (!GetWindowRect(tray, out tb)) return;
             int rightEdge = tb.Right;
             IntPtr notify = FindWindowEx(tray, IntPtr.Zero, "TrayNotifyWnd", null);
             RECT nr;
@@ -378,6 +378,19 @@ namespace TaskbarStatus
             int width = x + pad;
 
             int left = settings.Anchor == 1 ? tb.Left + settings.Offset : rightEdge - settings.Offset - width;
+            int windowTop = tb.Top;
+            if (fullscreen && embeddedIn == IntPtr.Zero)
+            {
+                // Explorer can slide the hidden taskbar outside the monitor. Its coordinates
+                // are only an anchor hint for an overlay, never a valid clipping boundary.
+                var bounds = OverlayLayout.KeepOnScreen(
+                    Screen.FromHandle(tray).Bounds,
+                    new System.Drawing.Rectangle(left, windowTop, width, height));
+                left = bounds.Left;
+                windowTop = bounds.Top;
+                width = bounds.Width;
+                height = bounds.Height;
+            }
             Present(ops, width, height);
 
             if (embeddedIn != IntPtr.Zero)
@@ -388,7 +401,7 @@ namespace TaskbarStatus
                 SetWindowPos(Handle, HWND_TOP, left - origin.x, tb.Top - origin.y, width, height, SWP_NOACTIVATE);
             }
             else
-                SetWindowPos(Handle, HWND_TOPMOST, left, tb.Top, width, height, SWP_NOACTIVATE);
+                SetWindowPos(Handle, HWND_TOPMOST, left, windowTop, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
 
         // Puts the widget inside the taskbar window (so the Start menu's blur and other shell
@@ -414,10 +427,15 @@ namespace TaskbarStatus
             }
             else
             {
-                embeddedIn = IntPtr.Zero;
-                SetParent(Handle, IntPtr.Zero);
+                SetLastError(0);
+                if (SetParent(Handle, IntPtr.Zero) == IntPtr.Zero && Marshal.GetLastWin32Error() != 0)
+                    return; // keep the real parent state; retry on the next tick
                 SetWindowLong(Handle, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
+                embeddedIn = IntPtr.Zero;
             }
+            // Apply the changed child/popup styles without taking focus from the game.
+            SetWindowPos(Handle, embed ? HWND_TOP : HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         }
 
         void EnsureFont(uint dpi)
@@ -703,7 +721,7 @@ namespace TaskbarStatus
             dragging = true;
             settings.Offset = Math.Max(0, settings.Anchor == 1 ? dragStartOffset + dx : dragStartOffset - dx);
             IntPtr tray = FindWindow("Shell_TrayWnd", null);
-            if (tray != IntPtr.Zero) Render(tray);
+            if (tray != IntPtr.Zero) Render(tray, IsFullscreen(GetForegroundWindow(), tray));
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
@@ -836,7 +854,8 @@ namespace TaskbarStatus
 
         const int WS_EX_LAYERED = 0x80000, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
         const int ULW_ALPHA = 2, SW_HIDE = 0, SW_SHOWNOACTIVATE = 4, TRANSPARENT = 1;
-        const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10, CLEARTYPE_NATURAL_QUALITY = 6;
+        const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10,
+                   SWP_FRAMECHANGED = 0x20, SWP_SHOWWINDOW = 0x40, CLEARTYPE_NATURAL_QUALITY = 6;
         static readonly IntPtr HWND_TOPMOST = new IntPtr(-1), HWND_TOP = IntPtr.Zero;
         const int GWL_STYLE = -16, WS_CHILD = 0x40000000;
         const int WS_POPUP = unchecked((int)0x80000000);
