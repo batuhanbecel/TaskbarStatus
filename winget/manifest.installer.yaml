@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: batuhanbecel.TaskbarStatus
+PackageVersion: {VERSION}
+InstallerType: inno
+Scope: machine
+ElevationRequirement: elevatesSelf
+UpgradeBehavior: install
+ProductCode: '{8F3C2A51-7B1E-4D6A-9C3E-2B5F0A7D4E91}_is1'
+Dependencies:
+  PackageDependencies:
+  - PackageIdentifier: namazso.PawnIO
+ReleaseDate: {DATE}
+Installers:
+- Architecture: x64
+  InstallerUrl: {URL}
+  InstallerSha256: {SHA256}
+ManifestType: installer
+ManifestVersion: 1.9.0
