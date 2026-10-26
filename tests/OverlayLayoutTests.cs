@@ -14,6 +14,12 @@ static class OverlayLayoutTests
     static void Main()
     {
         var screen = new Rectangle(0, 0, 1920, 1080);
+        CaptureCheck("Snipping capture preserves presentation", "SnippingTool", screen, screen, true);
+        CaptureCheck("Capture spanning monitors", "snippingtool", new Rectangle(-1920, 0, 3840, 1080), screen, true);
+        CaptureCheck("Normal snipping editor keeps updating", "SnippingTool", new Rectangle(100, 100, 800, 600), screen, false);
+        CaptureCheck("Legacy capture toolbar", "ScreenClippingHost", new Rectangle(500, 0, 500, 80), screen, true);
+        CaptureCheck("Fullscreen game remains fullscreen", "Game", screen, screen, false);
+        CaptureCheck("Unknown process is not capture UI", null, screen, screen, false);
         Check("Visible taskbar", screen, new Rectangle(1200, 1032, 500, 48), new Rectangle(1200, 1032, 500, 48));
         Check("Hidden bottom taskbar", screen, new Rectangle(1200, 1078, 500, 48), new Rectangle(1200, 1032, 500, 48));
         Check("Hidden top taskbar", screen, new Rectangle(1200, -46, 500, 48), new Rectangle(1200, 0, 500, 48));
@@ -23,5 +29,12 @@ static class OverlayLayoutTests
             new Rectangle(-600, -2, 500, 48), new Rectangle(-600, -48, 500, 48));
         Check("Large drag offset", screen, new Rectangle(-4000, 1032, 500, 48), new Rectangle(0, 1032, 500, 48));
         Check("Overlay wider than screen", screen, new Rectangle(-500, 1032, 2400, 48), new Rectangle(0, 1032, 1920, 48));
+    }
+
+    static void CaptureCheck(string name, string process, Rectangle window, Rectangle screen, bool expected)
+    {
+        if (ScreenCapturePolicy.PreservePresentation(process, window, screen) != expected)
+            throw new Exception(name);
+        Console.WriteLine("PASS " + name);
     }
 }

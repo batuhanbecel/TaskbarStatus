@@ -12,6 +12,7 @@ namespace TaskbarStatus
 
         // --dev: runs next to the installed copy for testing (own settings, no task hop, no updates).
         public static bool Dev { get; private set; }
+        public static bool Diagnose { get; private set; }
 
         [STAThread]
         static int Main(string[] args)
@@ -22,11 +23,12 @@ namespace TaskbarStatus
             if (args.Contains("--unregister-task")) return Autostart.Unregister() ? 0 : 1;
 
             Dev = args.Contains("--dev");
+            Diagnose = args.Contains("--diagnose");
             if (Dev) Settings.Key = @"Software\TaskbarStatus.Dev";
 
             // Not elevated but the elevated task is installed: start through it (no UAC prompt).
             bool fromTask = args.Contains(Autostart.FromTaskArg);
-            if (!Dev && !fromTask && !args.Contains(ElevatedArg) && !Autostart.IsAdmin() &&
+            if (!Dev && !Diagnose && !fromTask && !args.Contains(ElevatedArg) && !Autostart.IsAdmin() &&
                 Autostart.TaskExists() && Autostart.RunTask())
                 return 0;
 

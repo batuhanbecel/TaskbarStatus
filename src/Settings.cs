@@ -20,6 +20,7 @@ namespace TaskbarStatus
         public bool TwoLines = false;
         public bool Bold = false;
         public bool ShowLabels = true;
+        public bool ShowGlyphs = true;
         public bool ColorWarnings = true;
         public bool RamAsGb = false;
         public bool ShowInFullscreen = false;

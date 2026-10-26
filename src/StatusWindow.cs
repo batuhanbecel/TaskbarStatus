@@ -52,6 +52,32 @@ namespace TaskbarStatus
         string fontKey;
         int fontHeight;
         bool hidden;
+        string lastDiagnostic;
+
+        void Diagnose(IntPtr foreground)
+        {
+            if (!Program.Diagnose) return;
+            RECT bounds;
+            GetWindowRect(Handle, out bounds);
+            var cls = new StringBuilder(128);
+            GetClassName(foreground, cls, cls.Capacity);
+            uint pid;
+            GetWindowThreadProcessId(foreground, out pid);
+            string process = "unknown";
+            try { using (var p = Process.GetProcessById((int)pid)) process = p.ProcessName; }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            string state = String.Format("fg={0} class={1} capture={2} hidden={3} parent={4} visible={5} bounds={6},{7},{8},{9}",
+                process, cls, IsScreenCapture(foreground), hidden, embeddedIn, IsWindowVisible(Handle),
+                bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+            if (state == lastDiagnostic) return;
+            lastDiagnostic = state;
+            try { System.IO.File.AppendAllText(System.IO.Path.Combine(Application.StartupPath, "diagnostic.log"),
+                DateTime.Now.ToString("O") + " " + state + Environment.NewLine); }
+            catch (System.IO.IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
 
         // Dragging horizontally along the taskbar.
         bool mouseDown, dragging;
@@ -151,6 +177,11 @@ namespace TaskbarStatus
             }
 
             IntPtr fg = GetForegroundWindow();
+            Diagnose(fg);
+            // The snipping overlay is temporary desktop UI, not a fullscreen game.
+            // Leave visibility, parenting, z-order and pending installers alone while
+            // it captures the desktop (including an existing game overlay).
+            if (IsScreenCapture(fg)) return;
             if (fps.Available)
             {
                 fpsValue = fps.Read();
@@ -174,7 +205,7 @@ namespace TaskbarStatus
             SetEmbedded(tray, !fullscreen);
             Render(tray, fullscreen);
             if (!menu.Visible && ClientRectangle.Contains(PointToClient(Cursor.Position))) tip.SetToolTip(this, Details());
-            if (settings.CheckUpdates && !Program.Dev && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
+            if (settings.CheckUpdates && !Program.Dev && !Program.Diagnose && DateTime.UtcNow >= nextUpdateCheck) ScheduleUpdateCheck(false);
             if (!fullscreen) RunPendingInstaller();
         }
 
@@ -186,15 +217,13 @@ namespace TaskbarStatus
         {
             public string Label;
             public List<string> Values = new List<string>();
-            public List<string> Widest = new List<string>();   // fixes the width so text does not jitter
             public List<Level> Levels = new List<Level>();
 
             public Cell(string label) { Label = label; }
 
-            public void Add(string value, string widest, Level level)
+            public void Add(string value, Level level)
             {
                 Values.Add(value);
-                Widest.Add(widest);
                 Levels.Add(level);
             }
         }
@@ -205,36 +234,36 @@ namespace TaskbarStatus
             if (settings.ShowCpu || settings.ShowCpuTemp)
             {
                 var c = new Cell("CPU");
-                if (settings.ShowCpu) c.Add(Percent(cpuUsage), "100%", UsageLevel(cpuUsage));
-                if (settings.ShowCpuTemp) c.Add(Temp(cpuTempValue), "100°C", TempLevel(cpuTempValue));
-                cells.Add(c);
-            }
-            if (settings.ShowRam)
-            {
-                var c = new Cell("RAM");
-                if (settings.RamAsGb) c.Add(ramUsedGb.ToString("0.0") + " GB", "99.9 GB", UsageLevel(ramUsage));
-                else c.Add(Percent(ramUsage), "100%", UsageLevel(ramUsage));
+                if (settings.ShowCpu) c.Add(Percent(cpuUsage), UsageLevel(cpuUsage));
+                if (settings.ShowCpuTemp) c.Add(Temp(cpuTempValue), TempLevel(cpuTempValue));
                 cells.Add(c);
             }
             if (settings.ShowGpu || settings.ShowGpuTemp)
             {
                 var c = new Cell("GPU");
-                if (settings.ShowGpu) c.Add(gpuUsage.HasValue ? Percent(gpuUsage.Value) : "--", "100%", UsageLevel(gpuUsage ?? 0));
-                if (settings.ShowGpuTemp) c.Add(Temp(gpuSensor.Temperature), "100°C", TempLevel(gpuSensor.Temperature));
+                if (settings.ShowGpu) c.Add(gpuUsage.HasValue ? Percent(gpuUsage.Value) : "--", UsageLevel(gpuUsage ?? 0));
+                if (settings.ShowGpuTemp) c.Add(Temp(gpuSensor.Temperature), TempLevel(gpuSensor.Temperature));
+                cells.Add(c);
+            }
+            if (settings.ShowRam)
+            {
+                var c = new Cell("RAM");
+                if (settings.RamAsGb) c.Add(ramUsedGb.ToString("0.0") + " GB", UsageLevel(ramUsage));
+                else c.Add(Percent(ramUsage), UsageLevel(ramUsage));
                 cells.Add(c);
             }
             if (settings.ShowFps)
             {
                 var c = new Cell("FPS");
-                c.Add(fps.Available && fpsValue > 0 ? fpsValue.ToString() : "--", "999", Level.Normal);
+                c.Add(fps.Available && fpsValue > 0 ? fpsValue.ToString() : "--", Level.Normal);
                 cells.Add(c);
             }
             if (settings.ShowNet)
             {
                 var down = new Cell("↓");
-                down.Add(NetMonitor.Format(net.Down), "999 KB/s", Level.Normal);
+                down.Add(NetMonitor.Format(net.Down), Level.Normal);
                 var up = new Cell("↑");
-                up.Add(NetMonitor.Format(net.Up), "999 KB/s", Level.Normal);
+                up.Add(NetMonitor.Format(net.Up), Level.Normal);
                 cells.Add(down);
                 cells.Add(up);
             }
@@ -302,6 +331,7 @@ namespace TaskbarStatus
         {
             public int X, Y, Width;
             public string Text;
+            public MetricGlyph Glyph;
             public uint Color;   // ARGB; alpha dims labels
         }
 
@@ -334,39 +364,52 @@ namespace TaskbarStatus
 
             List<Cell> cells = BuildCells();
             var ops = new List<DrawOp>();
+            int[] rowEnds = new int[lines];
+            for (int row = 0; row < lines; row++) rowEnds[row] = pad;
             int x = pad;
             for (int i = 0; i < cells.Count; i += lines)
             {
-                int columnWidth = 0;
                 for (int row = 0; row < lines && i + row < cells.Count; row++)
                 {
                     Cell c = cells[i + row];
-                    int cx = x, y = top + row * fontHeight;
-                    // Text flows naturally after the label; the room the widest values would need is
-                    // reserved at the end of the cell, so neighbouring cells do not jitter.
-                    int reserved = 0;
-                    if (settings.ShowLabels || c.Values.Count == 0 || c.Label.Length == 1)
+                    int cx = rowEnds[row], y = top + row * fontHeight;
+                    if (c.Values.Count == 0)
                     {
                         int w = TextWidth(c.Label);
                         ops.Add(new DrawOp { X = cx, Y = y, Width = w, Text = c.Label, Color = c.Values.Count == 0 ? normal : label });
                         cx += w + space;
-                        reserved = w + space;
                     }
                     for (int v = 0; v < c.Values.Count; v++)
                     {
-                        if (v > 0) { cx += space; reserved += space; }
+                        if (v > 0) cx += Scale(6, dpi);
                         uint color = !settings.ColorWarnings || c.Levels[v] == Level.Normal ? normal
                                    : c.Levels[v] == Level.Warn ? warn : hot;
+                        if (settings.ShowGlyphs)
+                        {
+                            int glyphSize = Scale(settings.FontSize, dpi);
+                            MetricGlyph glyph = c.Values[v].EndsWith("°C") ||
+                                (c.Label == "CPU" && (v > 0 || !settings.ShowCpu)) ||
+                                (c.Label == "GPU" && (v > 0 || !settings.ShowGpu))
+                                ? MetricGlyph.Temperature : MetricGlyphs.ForLabel(c.Label);
+                            ops.Add(new DrawOp { X = cx, Y = y + (fontHeight - glyphSize) / 2,
+                                Width = glyphSize, Glyph = glyph, Color = color });
+                            cx += glyphSize + Scale(3, dpi);
+                        }
+                        if (v == 0 && ((settings.ShowLabels && c.Label.Length != 1) ||
+                            (!settings.ShowGlyphs && c.Label.Length == 1)))
+                        {
+                            int labelWidth = TextWidth(c.Label);
+                            ops.Add(new DrawOp { X = cx, Y = y, Width = labelWidth, Text = c.Label, Color = label });
+                            cx += labelWidth + space;
+                        }
                         int w = TextWidth(c.Values[v]);
                         ops.Add(new DrawOp { X = cx, Y = y, Width = w, Text = c.Values[v], Color = color });
                         cx += w;
-                        reserved += Math.Max(TextWidth(c.Widest[v]), w);
                     }
-                    columnWidth = Math.Max(columnWidth, Math.Max(cx - x, reserved));
+                    rowEnds[row] = cx + cellGap;
+                    x = Math.Max(x, cx);
                 }
-                x += columnWidth + cellGap;
             }
-            x -= cellGap;
             if (updater.UpdateAvailable)
             {
                 // A small accent dot: an update is waiting in the right-click menu.
@@ -491,7 +534,11 @@ namespace TaskbarStatus
             {
                 SetBkMode(memDc, TRANSPARENT);
                 SetTextColor(memDc, 0xFFFFFF);
-                foreach (DrawOp op in ops) TextOut(memDc, op.X, op.Y, op.Text, op.Text.Length);
+                foreach (DrawOp op in ops)
+                {
+                    if (op.Glyph != MetricGlyph.None) MetricGlyphs.Draw(memDc, op.Glyph, op.X, op.Y, op.Width);
+                    else TextOut(memDc, op.X, op.Y, op.Text, op.Text.Length);
+                }
                 GdiFlush();
 
                 int n = width * height;
@@ -549,6 +596,28 @@ namespace TaskbarStatus
             return r.Left <= screen.Left && r.Top <= screen.Top && r.Right >= screen.Right && r.Bottom >= screen.Bottom;
         }
 
+        static bool IsScreenCapture(IntPtr window)
+        {
+            if (window == IntPtr.Zero) return false;
+            uint pid;
+            GetWindowThreadProcessId(window, out pid);
+            if (pid == 0) return false;
+            try
+            {
+                using (Process process = Process.GetProcessById((int)pid))
+                {
+                    RECT r;
+                    if (!GetWindowRect(window, out r)) return false;
+                    return ScreenCapturePolicy.PreservePresentation(process.ProcessName,
+                        System.Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom),
+                        Screen.FromHandle(window).Bounds);
+                }
+            }
+            catch (ArgumentException) { return false; } // window/process exited during lookup
+            catch (InvalidOperationException) { return false; }
+            catch (System.ComponentModel.Win32Exception) { return false; }
+        }
+
         static bool IsLightTaskbar()
         {
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
@@ -578,6 +647,7 @@ namespace TaskbarStatus
             look.DropDownItems.Add(Toggle(L.T("Two lines (like the clock)", "İki satır (saat gibi)"), () => settings.TwoLines, v => settings.TwoLines = v));
             look.DropDownItems.Add(Toggle(L.T("Bold text", "Kalın yazı"), () => settings.Bold, v => settings.Bold = v));
             look.DropDownItems.Add(Toggle(L.T("Show labels", "Etiketleri göster"), () => settings.ShowLabels, v => settings.ShowLabels = v));
+            look.DropDownItems.Add(Toggle(L.T("Show glyphs", "Simgeleri göster"), () => settings.ShowGlyphs, v => settings.ShowGlyphs = v));
             look.DropDownItems.Add(Toggle(L.T("Highlight high values", "Yüksek değerleri renklendir"), () => settings.ColorWarnings, v => settings.ColorWarnings = v));
             look.DropDownItems.Add(Toggle(L.T("RAM in GB", "RAM'i GB olarak göster"), () => settings.RamAsGb, v => settings.RamAsGb = v));
             look.DropDownItems.Add(new ToolStripSeparator());
@@ -892,6 +962,7 @@ namespace TaskbarStatus
         [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hWnd, IntPtr hdcDst, IntPtr dst, ref SIZE size,
             IntPtr hdcSrc, ref POINT src, int key, ref BLENDFUNCTION blend, int flags);

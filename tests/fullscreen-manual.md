@@ -19,3 +19,13 @@ verify compositor behavior or actual game rendering.
 
 Exclusive fullscreen can bypass desktop composition. Use borderless fullscreen
 if the game does not display ordinary desktop overlays.
+
+## Snipping Tool regression
+
+With **Show over fullscreen apps** both off and on, start a new Snipping Tool
+capture from the desktop, wait longer than the update interval, and cancel with
+Escape. The widget must keep its pre-capture visibility and taskbar parent, then
+resume updates after capture ends. Repeat while a borderless game is foreground:
+an already hidden widget must stay hidden, and an overlay must not reattach or
+raise itself over the selection UI. The normal Snipping Tool editor must not pause
+readings. Verify pending installers do not run during selection.
