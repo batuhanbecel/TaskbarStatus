@@ -33,7 +33,8 @@ namespace TaskbarStatus
 
         // Embedding into the taskbar (see SetEmbedded).
         IntPtr embeddedIn;
-        bool embedFailed, closing;
+        DateTime nextEmbedTry;
+        bool closing;
         Form menuOwner;
         public static bool RestartRequested;
         int updateBusy;
@@ -452,7 +453,7 @@ namespace TaskbarStatus
         // is hidden behind a fullscreen app that we were asked to stay visible over.
         void SetEmbedded(IntPtr tray, bool embed)
         {
-            if (embed && (embedFailed || embeddedIn == tray)) return;
+            if (embed && (embeddedIn == tray || DateTime.UtcNow < nextEmbedTry)) return;
             if (!embed && embeddedIn == IntPtr.Zero) return;
 
             int style = GetWindowLong(Handle, GWL_STYLE);
@@ -462,8 +463,10 @@ namespace TaskbarStatus
                 SetLastError(0);
                 if (SetParent(Handle, tray) == IntPtr.Zero && Marshal.GetLastWin32Error() != 0)
                 {
-                    SetWindowLong(Handle, GWL_STYLE, style);   // not allowed here: stay an overlay
-                    embedFailed = true;
+                    // Typically right after sign-in or an Explorer restart, while the taskbar is
+                    // still being built. Stay an overlay for now and try again shortly.
+                    SetWindowLong(Handle, GWL_STYLE, style);
+                    nextEmbedTry = DateTime.UtcNow.AddSeconds(5);
                     return;
                 }
                 embeddedIn = tray;
