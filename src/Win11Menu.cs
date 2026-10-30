@@ -138,7 +138,46 @@ namespace TaskbarStatus
             protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
             {
                 e.TextColor = e.Item.Enabled ? Text : Disabled;
+                // Segoe UI Variable centres its line box, not its letters, so the text sits a little high; most visible
+                // on a bold item right above a separator. Line the middle of the capitals up with the middle of the item.
+                Rectangle r = e.TextRectangle;
+                if (r.Height > 0)
+                {
+                    r.Offset(0, e.Item.Height / 2 - (r.Y + CapMiddle(e.TextFont, r.Size, e.TextFormat)));
+                    e.TextRectangle = r;
+                }
                 base.OnRenderItemText(e);
+            }
+
+            static readonly System.Collections.Generic.Dictionary<string, int> capMiddles = new System.Collections.Generic.Dictionary<string, int>();
+
+            // Where the middle of a capital letter lands when text is drawn into a box of this size.
+            static int CapMiddle(Font font, Size box, TextFormatFlags flags)
+            {
+                string key = font.Name + "|" + font.Size + "|" + font.Style + "|" + box.Height + "|" + (int)flags;
+                int middle;
+                if (capMiddles.TryGetValue(key, out middle)) return middle;
+                middle = box.Height / 2;
+                using (var bmp = new Bitmap(Math.Max(box.Width, 32), box.Height))
+                {
+                    using (Graphics g = Graphics.FromImage(bmp))
+                    {
+                        g.Clear(Color.Black);
+                        TextRenderer.DrawText(g, "H", font, new Rectangle(0, 0, bmp.Width, bmp.Height), Color.White, Color.Black, flags);
+                    }
+                    int top = -1, bottom = -1;
+                    for (int y = 0; y < bmp.Height; y++)
+                        for (int x = 0; x < bmp.Width; x++)
+                        {
+                            if (bmp.GetPixel(x, y).G < 128) continue;
+                            if (top < 0) top = y;
+                            bottom = y;
+                            break;
+                        }
+                    if (top >= 0) middle = (top + bottom + 1) / 2;
+                }
+                capMiddles[key] = middle;
+                return middle;
             }
 
             protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
