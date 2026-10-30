@@ -80,7 +80,7 @@ menu instead (and as a small dot after the text).
 | RAM | `GlobalMemoryStatusEx` | |
 | GPU % | `GPU Engine` performance counters | Same method as Task Manager (busiest engine) |
 | GPU °C | `D3DKMTQueryAdapterInfo` (adapter perf data) | Same source as Task Manager; WDDM 2.4+ driver |
-| FPS | ETW, `Microsoft-Windows-DXGI` Present events | Needs admin. DirectX 10/11/12 and titles that present through DXGI |
+| FPS | ETW, `Microsoft-Windows-DxgKrnl` Present events (graphics kernel) | Needs admin. Any API: DirectX 9–12, OpenGL, Vulkan |
 
 ## How it sits in the taskbar
 

@@ -104,14 +104,18 @@ namespace TaskbarStatus
         }
     }
 
-    // FPS of the foreground window's process, counted from DXGI Present events
-    // through a real-time ETW session. Needs admin (or the "Performance Log Users" group).
+    // FPS of the foreground window's process, counted from the graphics kernel's Present events
+    // through a real-time ETW session. Every API ends up there (DXGI, Direct3D 9, OpenGL, Vulkan),
+    // and the event is logged on the presenting thread, so its process id is the game's.
+    // Needs admin (or the "Performance Log Users" group).
     class FpsMonitor : IDisposable
     {
         const string SessionName = "TaskbarStatusFpsSession";
-        static Guid DxgiProvider = new Guid("CA11C036-0102-4A2D-A6AD-F03CFED5D3C9");
-        const int DxgiProviderFirstDword = unchecked((int)0xCA11C036);
-        const ushort PresentStart = 42, PresentMultiplaneOverlayStart = 55;
+        static Guid DxgKrnlProvider = new Guid("802EC45A-1E99-4B83-9920-87C98277BA9D");
+        const int DxgKrnlProviderFirstDword = unchecked((int)0x802EC45A);
+        const ulong DxgKrnlPresentKeyword = 0x8000000;
+        // Once per present for flip/blt DXGI, D3D9 and OpenGL alike (measured with test apps).
+        const ushort DxgKrnlPresentInfo = 184;
 
         const uint EVENT_TRACE_REAL_TIME_MODE = 0x100;
         const uint WNODE_FLAG_TRACED_GUID = 0x00020000;
@@ -214,9 +218,9 @@ namespace TaskbarStatus
             Marshal.FreeHGlobal(props);
             if (err != 0) return false;
 
-            Guid provider = DxgiProvider;
-            if (EnableTraceEx2(session, ref provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER, 4,
-                    ulong.MaxValue, 0, 0, IntPtr.Zero) != 0)
+            Guid provider = DxgKrnlProvider;
+            if (EnableTraceEx2(session, ref provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER, 5,
+                    DxgKrnlPresentKeyword, 0, 0, IntPtr.Zero) != 0)
             {
                 StopSession();
                 return false;
@@ -246,9 +250,8 @@ namespace TaskbarStatus
         void OnEvent(IntPtr record)
         {
             // EVENT_RECORD.EventHeader: ProcessId @12, ProviderId @24, EventDescriptor.Id @40.
-            ushort id = (ushort)Marshal.ReadInt16(record, 40);
-            if (id != PresentStart && id != PresentMultiplaneOverlayStart) return;
-            if (Marshal.ReadInt32(record, 24) != DxgiProviderFirstDword) return;
+            if ((ushort)Marshal.ReadInt16(record, 40) != DxgKrnlPresentInfo) return;
+            if (Marshal.ReadInt32(record, 24) != DxgKrnlProviderFirstDword) return;
             int pid = Marshal.ReadInt32(record, 12);
             if (pid != targetPid) return;
             long stamp = Marshal.ReadInt64(record, 16);   // EVENT_HEADER.TimeStamp, QPC (ClientContext = 1)
