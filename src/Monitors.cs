@@ -148,8 +148,13 @@ namespace TaskbarStatus
         ulong traceHandle = INVALID_PROCESSTRACE_HANDLE;
         IntPtr logFile, loggerName;
         volatile int targetPid;
-        int frames;
-        readonly Stopwatch clock = Stopwatch.StartNew();
+
+        // QPC timestamps of the target's recent presents (ring buffer). ETW hands events over in
+        // batches roughly once a second, so counting what arrived since the last tick made the
+        // value jump between 0 ("--") and double; the timestamps say when frames really happened.
+        readonly object gate = new object();
+        readonly long[] stamps = new long[4096];
+        int stampHead, stampCount, stampPid;
 
         public bool Available { get; private set; }
 
@@ -162,13 +167,35 @@ namespace TaskbarStatus
 
         public int TargetPid { set { targetPid = value; } }
 
-        // Frames presented by the target process since the last call, per second.
+        // Frame rate of the target process over the last second of its presents; 0 when it
+        // has stopped presenting (or the target changed and no frames arrived yet).
         public int Read()
         {
-            int count = Interlocked.Exchange(ref frames, 0);
-            double seconds = clock.Elapsed.TotalSeconds;
-            clock.Restart();
-            return seconds > 0 ? (int)Math.Round(count / seconds) : 0;
+            long freq = Stopwatch.Frequency, now = Stopwatch.GetTimestamp();
+            lock (gate)
+            {
+                if (stampPid != targetPid || stampCount == 0) return 0;
+
+                // Events may arrive slightly out of order across CPU buffers: use the newest.
+                long latest = long.MinValue;
+                for (int i = 0; i < stampCount; i++)
+                    latest = Math.Max(latest, stamps[(stampHead - 1 - i + stamps.Length) % stamps.Length]);
+
+                // Delivery lags up to ~1 s behind, so only call it stopped after 2.5 s of silence.
+                if (now - latest > freq * 5 / 2) { stampCount = 0; return 0; }
+
+                long from = latest - freq, first = latest;
+                int n = 0;
+                for (int i = 0; i < stampCount; i++)
+                {
+                    long t = stamps[(stampHead - 1 - i + stamps.Length) % stamps.Length];
+                    if (t <= from) continue;
+                    n++;
+                    first = Math.Min(first, t);
+                }
+                if (n < 2 || latest == first) return n;
+                return (int)Math.Round((n - 1) * (double)freq / (latest - first));
+            }
         }
 
         bool Start()
@@ -222,7 +249,16 @@ namespace TaskbarStatus
             ushort id = (ushort)Marshal.ReadInt16(record, 40);
             if (id != PresentStart && id != PresentMultiplaneOverlayStart) return;
             if (Marshal.ReadInt32(record, 24) != DxgiProviderFirstDword) return;
-            if (Marshal.ReadInt32(record, 12) == targetPid) Interlocked.Increment(ref frames);
+            int pid = Marshal.ReadInt32(record, 12);
+            if (pid != targetPid) return;
+            long stamp = Marshal.ReadInt64(record, 16);   // EVENT_HEADER.TimeStamp, QPC (ClientContext = 1)
+            lock (gate)
+            {
+                if (stampPid != pid) { stampPid = pid; stampCount = 0; }
+                stamps[stampHead] = stamp;
+                stampHead = (stampHead + 1) % stamps.Length;
+                if (stampCount < stamps.Length) stampCount++;
+            }
         }
 
         static IntPtr NewProperties()
